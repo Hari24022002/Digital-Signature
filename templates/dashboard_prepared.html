@@ -1,0 +1,947 @@
+{% extends "layout.html" %}
+{% block title %}📜 e-HASTAKSHAR{% endblock %}
+{% block content %}
+
+<h2 class="text-center my-4 fw-bold text-primary">📝 Tester - {{ session['username'] }}</h2>
+
+<div class="row">
+  <!-- Pending Documents Section -->
+  <div class="col-md-12">
+    <h3 class="mt-4">Pending Documents</h3>
+    <div id="pending-doc-list" class="grid-container">
+      {% if documents %}
+        {% set uploaded_and_verified_docs = documents|selectattr('status', 'in', ['Uploaded', 'Verified', 'Rejected'])|list %}
+        {% if uploaded_and_verified_docs %}
+          {% set sorted_docs = uploaded_and_verified_docs|sort(attribute='timestamp_uploaded', reverse=True) %}
+          <!-- Latest Uploaded Document -->
+          {% set latest_uploaded = sorted_docs|selectattr('status', 'equalto', 'Uploaded')|first %}
+          {% if latest_uploaded %}
+            <div class="latest-doc-section doc-card status-{{ latest_uploaded.status.lower() }}" id="doc-{{ latest_uploaded.id }}" data-filename="{{ latest_uploaded.signed_filename or latest_uploaded.filename }}" data-status="{{ latest_uploaded.status }}" data-section="pending">
+              {% if latest_uploaded.status == 'Rejected' and latest_uploaded.remarks %}
+                <div class="remarks-tooltip hidden" id="tooltip-{{ latest_uploaded.id }}">Remarks: {{ latest_uploaded.remarks | e }}</div>
+              {% endif %}
+              <h3 class="text-primary">Latest Uploaded Document</h3>
+              <p>
+                <div class="filename">{{ latest_uploaded.original_filename }}</div><br>
+                <span class="badge status-{{ latest_uploaded.status.lower() }}">{{ latest_uploaded.status }}</span><br>
+                Uploaded: {{ latest_uploaded.timestamp_uploaded[:19].replace("T", " ") }}
+              </p>
+              <button class="btn btn-secondary" onclick="openPreview('{{ url_for('uploaded_file', filename=latest_uploaded.signed_filename or latest_uploaded.filename) | e }}', '{{ latest_uploaded.id }}', '{{ latest_uploaded.status }}', 'pending')">
+                📄 View
+              </button>
+              <button class="btn btn-danger btn-sm delete-btn" onclick="deleteDocument('{{ latest_uploaded.id }}')">🗑 Delete</button>
+            </div>
+          {% endif %}
+          <!-- Other Uploaded, Verified, and Rejected Documents -->
+          {% for d in sorted_docs %}
+            {% if latest_uploaded is not defined or d.id != latest_uploaded.id %}
+              <div class="doc-card mb-3 status-{{ d.status.lower() }}" id="doc-{{ d.id }}" data-filename="{{ d.signed_filename or d.filename }}" data-status="{{ d.status }}" data-section="pending">
+                {% if d.status == 'Rejected' and d.remarks %}
+                  <div class="remarks-tooltip hidden" id="tooltip-{{ d.id }}">Remarks: {{ d.remarks | e }}</div>
+                {% endif %}
+                <p>
+                  <div class="filename">{{ d.original_filename }}</div><br>
+                  <span class="badge status-{{ d.status.lower() }}">{{ d.status }}</span><br>
+                  Uploaded: {{ d.timestamp_uploaded[:19].replace("T", " ") }}
+                </p>
+                <button class="btn btn-secondary" onclick="openPreview('{{ url_for('uploaded_file', filename=d.signed_filename or d.filename) | e }}', '{{ d.id }}', '{{ d.status }}', 'pending')">
+                  📄 View
+                </button>
+                <button class="btn btn-danger btn-sm delete-btn" onclick="deleteDocument('{{ d.id }}')">🗑 Delete</button>
+              </div>
+            {% endif %}
+          {% endfor %}
+        {% else %}
+          <p>No uploaded documents found.</p>
+        {% endif %}
+      {% else %}
+        <p>No documents found.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Upload Section -->
+  <div class="col-md-4 upload-section">
+    <h3>Upload New PDF</h3>
+    <form method="POST" action="{{ url_for('upload') }}" enctype="multipart/form-data">
+      <input type="file" class="form-control mb-2" name="doc" accept=".pdf,.doc,.docx" multiple required>
+      <button class="btn btn-primary">Upload</button>
+    </form>
+  </div>
+
+  <!-- Live Search Section -->
+  <div class="text-center mb-3">
+    <input type="text" id="search-input" class="form-control w-50 mx-auto shadow-sm" placeholder="🔍 Live Search Documents..." onkeyup="filterDocumentCards()">
+  </div>
+  <h3 class="mt-4">All Documents</h3>
+  <div id="doc-list" class="col-md-8 grid-container">
+    {% if documents %}
+      {% set completed_docs = documents|selectattr('status', 'in', ['Pending', 'Approved'])|list %}
+      {% if completed_docs %}
+        {% for d in completed_docs|sort(attribute='timestamp_uploaded', reverse=True) %}
+        <div class="doc-card mb-3 status-{{ d.status.lower() }}" id="doc-{{ d.id }}" data-filename="{{ d.signed_filename or d.filename }}" data-status="{{ d.status }}" data-section="all">
+          {% if d.status == 'Rejected' and d.remarks %}
+            <div class="remarks-tooltip hidden" id="tooltip-{{ d.id }}">Remarks: {{ d.remarks | e }}</div>
+          {% endif %}
+          <p>
+            <div class="filename">{{ d.original_filename }}</div><br>
+            <span class="badge status-{{ d.status.lower() }}">{{ d.status }}</span><br>
+            Sent: {{ d.timestamp_uploaded[:19].replace("T", " ") }}
+          </p>
+          <button class="btn btn-secondary" onclick="openPreview('{{ url_for('uploaded_file', filename=d.signed_filename or d.filename) | e }}', '{{ d.id }}', '{{ d.status }}', 'all')">
+            📄 View
+          </button>
+          {% if d.status == 'Rejected' %}
+            <button class="btn btn-danger btn-sm delete-btn" onclick="deleteDocument('{{ d.id }}')">🗑 Delete</button>
+          {% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <p>No completed documents found.</p>
+      {% endif %}
+    {% else %}
+      <p>No documents found.</p>
+    {% endif %}
+  </div>
+</div>
+
+<!-- PDF Preview Modal -->
+<div id="pdfContainer" class="pdf-popup hidden" data-draggable="true">
+  <div class="popup-header">
+    <span class="popup-title">📄 PDF Preview</span>
+    <div class="nav-container">
+      <button id="prevBtn" class="btn btn-sm btn-secondary hidden" onclick="prevDocument()">⬅Previous</button>
+      <button id="nextBtn" class="btn btn-sm btn-secondary hidden" onclick="nextDocument()"> ➡Next</button>
+    </div>
+    <div class="action-buttons">
+      <button class="btn btn-sm btn-secondary" onclick="toggleSize()">🗖</button>
+      <button class="btn btn-sm btn-danger" onclick="closePreview()">❌</button>
+    </div>
+  </div>
+  <iframe id="pdfViewer" src="" frameborder="0"></iframe>
+  <div id="pdfActions" class="p-2 bg-dark-subtle border-top pdf-actions hidden">
+    <form id="testerForm" class="hidden">
+      <input type="hidden" name="role_context" value="Tester">
+      <input type="hidden" id="testerDocId" name="id">
+      <div class="d-flex gap-2">
+        <button type="button" id="verifyBtn" class="btn btn-success w-50 hidden" onclick="verifyDocument()">✅ Verify</button>
+        <button type="button" id="sendBtn" class="btn btn-primary w-50 hidden" onclick="sendDocument()">📤 Send</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Notification Div -->
+<div id="actionMessage" class="alert hidden"></div>
+
+<!-- Logout -->
+<div class="logout-container">
+  <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+</div>
+
+<!-- Scripts -->
+<script>
+  let isFullscreen = false;
+  let currentDocId = null;
+  let currentSection = null;
+  let currentDocIndex = -1;
+  let docList = [];
+  // Drag state
+  let isDragging = false;
+  let currentX;
+  let currentY;
+  let initialX;
+  let initialY;
+
+  function openPreview(pdfUrl, docId, status, section) {
+    console.log('Opening preview with URL:', pdfUrl, 'Doc ID:', docId, 'Status:', status, 'Section:', section);
+    const container = document.getElementById("pdfContainer");
+    const viewer = document.getElementById("pdfViewer");
+    const actions = document.getElementById("pdfActions");
+    const testerForm = document.getElementById("testerForm");
+    const verifyBtn = document.getElementById("verifyBtn");
+    const sendBtn = document.getElementById("sendBtn");
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    const msg = document.getElementById("actionMessage");
+
+    // Validate inputs
+    if (!pdfUrl || !docId || !status || !section) {
+      console.error('Invalid parameters: pdfUrl, docId, status, or section is missing');
+      msg.classList.remove("hidden", "alert-success");
+      msg.className = "alert alert-danger";
+      msg.innerText = "Error: Invalid document parameters";
+      setTimeout(() => msg.classList.add("hidden"), 3000);
+      return;
+    }
+
+    // Set iframe source and handle potential errors
+    try {
+      viewer.src = pdfUrl;
+      currentDocId = docId;
+      currentSection = section;
+      document.getElementById("testerDocId").value = docId;
+    } catch (e) {
+      console.error('Error setting iframe src:', e);
+      msg.classList.remove("hidden", "alert-success");
+      msg.className = "alert alert-danger";
+      msg.innerText = "Error: Failed to load document preview";
+      setTimeout(() => msg.classList.add("hidden"), 3000);
+      return;
+    }
+
+    // Build document list for the current section, excluding hidden cards
+    docList = [];
+    const selector = section === 'pending' ? '#pending-doc-list .doc-card' : '#doc-list .doc-card';
+    document.querySelectorAll(selector).forEach(card => {
+      if (card.style.display !== "none") {
+        docList.push({
+          id: card.id.replace("doc-", ""),
+          url: card.querySelector("button[onclick*='openPreview']").getAttribute("onclick").match(/'([^']+)'/)[1],
+          status: card.getAttribute("data-status")
+        });
+      }
+    });
+    currentDocIndex = docList.findIndex(doc => doc.id === docId);
+
+    // Show/hide buttons based on status
+    testerForm.classList.add("hidden");
+    verifyBtn.classList.add("hidden");
+    sendBtn.classList.add("hidden");
+    actions.classList.add("hidden");
+    if (status === 'Uploaded') {
+      testerForm.classList.remove("hidden");
+      actions.classList.remove("hidden");
+      verifyBtn.classList.remove("hidden");
+      sendBtn.classList.remove("hidden");
+    } else if (status === 'Verified') {
+      testerForm.classList.remove("hidden");
+      actions.classList.remove("hidden");
+      verifyBtn.classList.add("hidden");
+      sendBtn.classList.remove("hidden");
+    }
+
+    // Show/hide navigation buttons
+    prevBtn.classList.toggle("hidden", currentDocIndex <= 0 || docList.length <= 1);
+    nextBtn.classList.toggle("hidden", currentDocIndex >= docList.length - 1 || docList.length <= 1);
+
+    // Show modal
+    container.classList.remove("hidden", "minimized");
+    msg.classList.add("hidden");
+
+    // Reset modal position and drag state
+    if (!container.classList.contains("fullscreen")) {
+      container.style.left = "";
+      container.style.top = "";
+      container.style.bottom = "30px";
+      container.style.right = "30px";
+      currentX = window.innerWidth - container.offsetWidth - 30;
+      currentY = window.innerHeight - container.offsetHeight - 30;
+    }
+
+    // Handle iframe load errors
+    viewer.onerror = () => {
+      console.error('Iframe failed to load:', pdfUrl);
+      msg.classList.remove("hidden", "alert-success");
+      msg.className = "alert alert-danger";
+      msg.innerText = "Error: Document could not be loaded";
+      setTimeout(() => msg.classList.add("hidden"), 3000);
+    };
+  }
+
+  function prevDocument() {
+    if (currentDocIndex > 0) {
+      currentDocIndex--;
+      const doc = docList[currentDocIndex];
+      openPreview(doc.url, doc.id, doc.status, currentSection);
+    }
+  }
+
+  function nextDocument() {
+    if (currentDocIndex < docList.length - 1) {
+      currentDocIndex++;
+      const doc = docList[currentDocIndex];
+      openPreview(doc.url, doc.id, doc.status, currentSection);
+    }
+  }
+
+  function closePreview() {
+    const container = document.getElementById("pdfContainer");
+    const viewer = document.getElementById("pdfViewer");
+    const actions = document.getElementById("pdfActions");
+    const testerForm = document.getElementById("testerForm");
+    const verifyBtn = document.getElementById("verifyBtn");
+    const sendBtn = document.getElementById("sendBtn");
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    viewer.src = "";
+    actions.classList.add("hidden");
+    testerForm.classList.add("hidden");
+    verifyBtn.classList.add("hidden");
+    sendBtn.classList.add("hidden");
+    prevBtn.classList.add("hidden");
+    nextBtn.classList.add("hidden");
+    currentDocId = null;
+    currentSection = null;
+    currentDocIndex = -1;
+    docList = [];
+    container.classList.add("hidden");
+    isDragging = false;
+  }
+
+  function toggleSize() {
+    const container = document.getElementById("pdfContainer");
+    isFullscreen = !isFullscreen;
+    container.classList.toggle("fullscreen", isFullscreen);
+    container.classList.remove("minimized");
+    // Reset position in fullscreen
+    if (container.classList.contains("fullscreen")) {
+      container.style.left = "2.5%";
+      container.style.top = "2.5%";
+      container.style.bottom = "2.5%";
+      container.style.right = "2.5%";
+    } else {
+      // Restore default position when exiting fullscreen
+      container.style.left = "";
+      container.style.top = "";
+      container.style.bottom = "30px";
+      container.style.right = "30px";
+      currentX = window.innerWidth - container.offsetWidth - 30;
+      currentY = window.innerHeight - container.offsetHeight - 30;
+    }
+    // Update navigation buttons
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    prevBtn.classList.toggle("hidden", currentDocIndex <= 0 || docList.length <= 1);
+    nextBtn.classList.toggle("hidden", currentDocIndex >= docList.length - 1 || docList.length <= 1);
+  }
+
+  function filterDocumentCards() {
+    const input = document.getElementById("search-input").value.toLowerCase();
+    const cards = document.querySelectorAll(".doc-card, .latest-doc-section");
+    cards.forEach(card => {
+      const text = card.textContent.toLowerCase();
+      card.style.display = text.includes(input) ? "" : "none";
+      const tooltip = card.querySelector(".remarks-tooltip");
+      if (tooltip) {
+        tooltip.classList.add("hidden");
+      }
+    });
+    // Reset navigation if modal is open
+    if (currentDocId && currentSection) {
+      const currentCard = document.getElementById(`doc-${currentDocId}`);
+      if (currentCard && currentCard.style.display === "none") {
+        closePreview();
+      }
+    }
+  }
+
+  function verifyDocument() {
+    const docId = currentDocId;
+    const card = document.getElementById(`doc-${docId}`);
+    const msg = document.getElementById("actionMessage");
+    const verifyBtn = document.getElementById("verifyBtn");
+    const sendBtn = document.getElementById("sendBtn");
+    const testerForm = document.getElementById("testerForm");
+
+    msg.classList.remove("hidden", "alert-success", "alert-danger");
+    msg.innerText = "";
+
+    if (card) {
+      card.style.opacity = '0.5';
+      card.querySelectorAll('button').forEach(btn => btn.disabled = true);
+    }
+
+    fetch(`/verify/${docId}`, {
+      method: "GET",
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    }).then(res => {
+      return res.json().then(data => ({ status: res.status, data }));
+    }).then(({ status, data }) => {
+      if (status === 200) {
+        msg.innerText = data.message;
+        msg.className = "alert alert-success";
+        msg.classList.remove("hidden");
+        if (card) {
+          card.classList.remove("status-uploaded");
+          card.classList.add("status-verified");
+          card.setAttribute("data-status", "Verified");
+          const badge = card.querySelector(".badge");
+          if (badge) {
+            badge.classList.remove("status-uploaded");
+            badge.classList.add("status-verified");
+            badge.innerText = "Verified";
+          }
+          card.style.opacity = '1';
+          card.querySelectorAll('button').forEach(btn => btn.disabled = false);
+        }
+        if (verifyBtn) {
+          verifyBtn.classList.add("hidden");
+        }
+        if (sendBtn) {
+          sendBtn.classList.remove("hidden");
+        }
+        testerForm.classList.remove("hidden");
+        document.getElementById("pdfActions").classList.remove("hidden");
+        if (currentDocIndex >= 0 && currentDocIndex < docList.length) {
+          docList[currentDocIndex].status = "Verified";
+        }
+        setTimeout(() => msg.classList.add("hidden"), 2000);
+      } else {
+        if (card) {
+          card.style.opacity = '1';
+          card.querySelectorAll('button').forEach(btn => btn.disabled = false);
+        }
+        msg.innerText = data.error || "Verification failed: Unknown error";
+        msg.className = "alert alert-danger";
+        msg.classList.remove("hidden");
+        setTimeout(() => msg.classList.add("hidden"), 3000);
+      }
+    }).catch(e => {
+      if (card) {
+        card.style.opacity = '1';
+        card.querySelectorAll('button').forEach(btn => btn.disabled = false);
+      }
+      msg.innerText = "Verification failed: Network error";
+      msg.className = "alert alert-danger";
+      msg.classList.remove("hidden");
+      setTimeout(() => msg.classList.add("hidden"), 3000);
+    });
+  }
+
+  function sendDocument() {
+    const docId = currentDocId;
+    const card = document.getElementById(`doc-${docId}`);
+    const msg = document.getElementById("actionMessage");
+
+    msg.classList.remove("hidden", "alert-success", "alert-danger");
+    msg.innerText = "";
+
+    if (card) {
+      card.style.opacity = '0.5';
+      card.querySelectorAll('button').forEach(btn => btn.disabled = true);
+    }
+
+    fetch(`/send/${docId}?ajax=true&role_context=Tester`, {
+      method: "GET",
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    }).then(res => {
+      return res.json().then(data => ({ status: res.status, data }));
+    }).then(({ status, data }) => {
+      if (status === 200) {
+        msg.innerText = data.message || "Document sent successfully";
+        msg.className = "alert alert-success";
+        msg.classList.remove("hidden");
+        setTimeout(() => {
+          msg.classList.add("hidden");
+          closePreview();
+          location.reload();
+        }, 2000);
+      } else {
+        if (card) {
+          card.style.opacity = '1';
+          card.querySelectorAll('button').forEach(btn => btn.disabled = false);
+        }
+        msg.innerText = data.error || "Sending failed";
+        msg.className = "alert alert-danger";
+        msg.classList.remove("hidden");
+        setTimeout(() => msg.classList.add("hidden"), 3000);
+      }
+    }).catch(e => {
+      if (card) {
+        card.style.opacity = '1';
+        card.querySelectorAll('button').forEach(btn => btn.disabled = false);
+      }
+      msg.innerText = "Sending failed: Network error";
+      msg.className = "alert alert-danger";
+      msg.classList.remove("hidden");
+      setTimeout(() => msg.classList.add("hidden"), 3000);
+    });
+  }
+
+  function deleteDocument(docId) {
+    const card = document.getElementById(`doc-${docId}`);
+    const msg = document.getElementById("actionMessage");
+
+    msg.classList.remove("hidden", "alert-success", "alert-danger");
+    msg.innerText = "";
+
+    if (card) {
+      card.style.opacity = '0.5';
+      card.querySelectorAll('button').forEach(btn => btn.disabled = true);
+    }
+
+    fetch(`/delete/${docId}`, {
+      method: "DELETE",
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    }).then(res => {
+      if (res.ok) {
+        if (card) card.remove();
+        msg.innerText = 'Document deleted successfully';
+        msg.className = "alert alert-success";
+        msg.classList.remove("hidden");
+        setTimeout(() => {
+          msg.classList.add("hidden");
+          if (currentDocId === docId) {
+            closePreview();
+          } else if (currentDocIndex >= 0) {
+            docList = docList.filter(doc => doc.id !== docId);
+            if (currentDocIndex > docList.length - 1) {
+              currentDocIndex = docList.length - 1;
+            }
+            const prevBtn = document.getElementById("prevBtn");
+            const nextBtn = document.getElementById("nextBtn");
+            prevBtn.classList.toggle("hidden", currentDocIndex <= 0 || docList.length <= 1);
+            nextBtn.classList.toggle("hidden", currentDocIndex >= docList.length - 1 || docList.length <= 1);
+          }
+        }, 2000);
+      } else {
+        return res.json().then(err => { throw new Error(err.error || 'Deletion failed'); });
+      }
+    }).catch(e => {
+      if (card) {
+        card.style.opacity = '1';
+        card.querySelectorAll('button').forEach(btn => btn.disabled = false);
+      }
+      msg.innerText = e.message;
+      msg.className = "alert alert-danger";
+      msg.classList.remove("hidden");
+      setTimeout(() => msg.classList.add("hidden"), 2000);
+    });
+  }
+
+  // Initialize event listeners
+  document.addEventListener("DOMContentLoaded", () => {
+    // Trigger filtering on input
+    document.getElementById("search-input").addEventListener("input", filterDocumentCards);
+
+    // Add hover event listeners for tooltips
+    const docCards = document.querySelectorAll(".doc-card, .latest-doc-section");
+    docCards.forEach(card => {
+      const tooltip = card.querySelector(".remarks-tooltip");
+      if (tooltip) {
+        card.addEventListener("mouseenter", () => {
+          if (card.style.display !== "none") {
+            tooltip.classList.remove("hidden");
+          }
+        });
+        card.addEventListener("mouseleave", () => {
+          tooltip.classList.add("hidden");
+        });
+      }
+    });
+
+    // Drag event listeners for modal
+    const modal = document.getElementById("pdfContainer");
+    const header = modal.querySelector(".popup-header");
+
+    // Initialize drag position based on bottom: 30px, right: 30px
+    currentX = window.innerWidth - modal.offsetWidth - 30;
+    currentY = window.innerHeight - modal.offsetHeight - 30;
+
+    header.addEventListener("mousedown", (e) => {
+      if (modal.classList.contains("fullscreen") || modal.classList.contains("minimized")) return;
+      isDragging = true;
+      initialX = e.clientX - currentX;
+      initialY = e.clientY - currentY;
+      header.style.cursor = "grabbing";
+    });
+
+    document.addEventListener("mousemove", (e) => {
+      if (!isDragging) return;
+      e.preventDefault();
+      currentX = e.clientX - initialX;
+      currentY = e.clientY - initialY;
+
+      // Constrain modal within viewport
+      const rect = modal.getBoundingClientRect();
+      const maxX = window.innerWidth - rect.width;
+      const maxY = window.innerHeight - rect.height;
+      currentX = Math.max(0, Math.min(currentX, maxX));
+      currentY = Math.max(0, Math.min(currentY, maxY));
+
+      modal.style.left = currentX + "px";
+      modal.style.top = currentY + "px";
+      modal.style.bottom = "auto";
+      modal.style.right = "auto";
+    });
+
+    document.addEventListener("mouseup", () => {
+      if (isDragging) {
+        isDragging = false;
+        header.style.cursor = "move";
+      }
+    });
+  });
+</script>
+
+<!-- Styles -->
+<style>
+.upload-section {
+  background: #f8f9fa56;
+  padding: 20px;
+  border-radius: 10px;
+}
+
+.grid-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding-left: 20px;
+}
+
+#pending-doc-list .grid-container .doc-card,
+#pending-doc-list .grid-container .latest-doc-section {
+  width: 250px;
+}
+
+#doc-list .grid-container .doc-card {
+  width: 260px;
+}
+
+.latest-doc-section {
+  background: #ffffff00;
+  padding: 1rem;
+  border-radius: 25px;
+  border-left: 5px solid #ffc107;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  position: relative;
+  overflow: visible;
+  color: #fff;
+}
+
+.latest-doc-section::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: inherit;
+  backdrop-filter: blur(7px);
+  z-index: -1;
+}
+
+.latest-doc-section p,
+.latest-doc-section .filename,
+.latest-doc-section .badge {
+  color: #fff;
+}
+
+.doc-card {
+  border: 1px solid #ccc;
+  padding: 1rem;
+  border-radius: 25px;
+  background: #ffffff0c;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  position: relative;
+  overflow: visible;
+  color: white;
+}
+
+
+.doc-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: inherit;
+  backdrop-filter: blur(7px);
+  z-index: -1;
+}
+
+.doc-card.status-uploaded {
+  border-left: 5px solid #ffc107;
+  background-color: #e8f6ec00;
+  backdrop-filter: blur(3px);
+}
+
+.doc-card.status-verified {
+  border-left: 5px solid #28a745;
+  background-color: #e8f6ec00;
+  backdrop-filter: blur(3px);
+}
+
+.doc-card.status-pending {
+  border-left: 5px solid #ffc107;
+  background-color: #e8f6ec00;
+  backdrop-filter: blur(3px);
+}
+.doc-card.status-pending:hover{
+  transform: scale(1.03);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+.doc-card.status-approved {
+  border-left: 5px solid #0c8328;
+  background-color: #e8f6ec00;
+  backdrop-filter: blur(3px);
+}
+.doc-card.status-approved:hover{
+  transform: scale(1.03);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+.doc-card.status-rejected {
+  border-left: 5px solid #dc3545;
+  background-color: #e8f6ec00;
+  backdrop-filter: blur(3px);
+}
+
+.latest-doc-section.status-uploaded {
+  border-left: 5px solid #ffc107;
+  background-color: #e8f6ec00;
+  backdrop-filter: blur(3px);
+}
+
+.latest-doc-section.status-verified {
+  border-left: 5px solid #28a745;
+  background-color: #e8f6ec00;
+  backdrop-filter: blur(3px);
+}
+
+.doc-card > *, .latest-doc-section > * {
+  position: relative;
+  z-index: 1;
+}
+
+.filename {
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+  font-weight: bold;
+  color: white;
+}
+
+.delete-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 2px 8px;
+  font-size: 0.8rem;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0px 7px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  vertical-align: middle;
+  border-radius: 25px;
+  color: #fff;
+}
+
+.status-uploaded {
+  background-color: #ffc107;
+  color: #fff;
+}
+
+.status-verified {
+  background-color: #28a745;
+  color: #fff;
+}
+
+.status-pending {
+  background-color: #17a2b8;
+  color: #fff;
+}
+
+.status-approved {
+  background-color: #0c8328;
+  color: #fff;
+}
+
+.status-rejected {
+  background-color: #dc3545;
+  color: #fff;
+}
+
+.pdf-popup {
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  width: 700px;
+  height: 500px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  display: flex;
+  flex-direction: column;
+  z-index: 1050;
+  overflow: hidden;
+  transition: all 0.01s ease;
+}
+
+.pdf-popup.hidden { 
+  display: none;
+}
+
+.pdf-popup.fullscreen {
+  width: 100vw !important;
+  height: 100vh !important;
+  bottom: 0 !important;
+  right: 0 !important;
+  left: 0 !important;
+  margin: 0 !important;
+}
+
+.pdf-popup.fullscreen .popup-header {
+  padding: 15px;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.pdf-popup.fullscreen .nav-container button {
+  font-size: 1rem;
+  padding: 8px 16px;
+}
+
+.pdf-popup.minimized {
+  width: 300px !important;
+  height: 50px !important;
+  bottom: 30px;
+  right: 30px;
+}
+
+.pdf-popup.minimized iframe,
+.pdf-popup.minimized .pdf-actions {
+  display: none;
+}
+
+.pdf-popup iframe {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.popup-header {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  z-index: 1100;
+  cursor: move;
+}
+
+.nav-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  flex-grow: 1;
+}
+
+.action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pdf-actions {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #f0f0f000;
+}
+
+.pdf-actions.hidden {
+  display: none;
+}
+
+.logout-container {
+  position: fixed;
+  top: 10px;
+  left: 20px;
+}
+
+#search-input {
+  width: 400px;
+  padding: 15px 15px;
+  font-size: 1rem;
+  border-radius: 25px;
+  background: rgba(255, 255, 255, 0.575);
+  border: 3px solid rgba(0, 0, 0, 0.3);
+  color: #ffffff;
+  text-align: center;
+  backdrop-filter: blur(5px);
+}
+
+#actionMessage {
+  position: fixed;
+  top: 100px;
+  right: auto;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000;
+  padding: 10px 20px;
+  border-radius: 20px;
+  max-width: 400px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(5px);
+  font-size: 1rem;
+  text-align: center;
+}
+
+.alert-success {
+  background-color: #49dd6bbb;
+  color: white;
+}
+
+.alert-danger {
+  background-color: #e9828c6b;
+  color: white;
+}
+
+.alert.hidden {
+  display: none;
+}
+
+.remarks-tooltip {
+  position: absolute;
+  top: -90px;
+  left: -30px;
+  right: 60px;
+  max-width: 500px;
+  max-height: 100px;
+  padding: 8px 12px;
+  background: #ffffffda;
+  color: #050505;
+  border-radius: 30px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  z-index: 10000;
+  font-size: 1.0rem;
+  word-wrap: break-word;
+  text-align: center;
+  overflow: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.remarks-tooltip::-webkit-scrollbar {
+  display: none;
+}
+
+.remarks-tooltip.hidden {
+  display: none;
+}
+</style>
+{% endblock %}

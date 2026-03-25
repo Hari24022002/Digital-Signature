@@ -1,0 +1,792 @@
+{% extends "layout.html" %}
+{% block title %}📜 e-HASTAKSHAR{% endblock %}
+{% block content %}
+
+<h2>Tester & Certifier - {{ session['username'] }}</h2>
+
+<div class="logout-container">
+    <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+</div>
+
+<div class="btn-group mb-4">
+    <button class="btn btn-primary" onclick="switchModule('prepared')">🧪 Prepared Mode</button>
+    <button class="btn btn-secondary" onclick="switchModule('certifier')">🛡 Certifier Mode</button>
+</div>
+
+<div id="managerSection">
+    <!-- Prepared Module -->
+    <div id="preparedModule">
+        <h4>📁 Uploaded Documents</h4>
+        <div class="prepared-grid-container">
+            {% for d in documents %}
+                {% if d.uploaded_by == user and d.status in ['Uploaded', 'Verified', 'Rejected'] %}
+                    <div class="prepared-doc-card {{ d.status|lower }}" id="doc-{{ d.id }}" data-section="prepared">
+                        <button class="btn btn-danger btn-sm delete-btn" onclick="deleteDocument('{{ d.id }}')">❌</button>
+                        {% if d.status == 'Rejected' and d.remarks %}
+                            <div class="remarks-tooltip hidden" id="tooltip-{{ d.id }}">Remarks: {{ d.remarks | e }}</div>
+                        {% endif %}
+                        <div class="doc-content">
+                            <strong>{{ d.original_filename }}</strong><br>
+                            <small>Status: <span class="badge status-{{ d.status|lower }}">{{ d.status }}</span></small><br>
+                            <small>Uploaded: {{ d.timestamp_uploaded[:19].replace("T", " ") }}</small>
+                            <div class="modal-footer">
+                                <button class="btn btn-outline-primary btn-sm" onclick="openDocModal('{{ url_for('uploaded_file', filename=d.signed_filename or d.filename) }}', '{{ d.id }}', '{{ d.status }}', 'prepared')">👁 View</button>
+                            </div>
+                        </div>
+                    </div>
+                {% endif %}
+            {% endfor %}
+        </div>
+
+        <h4>Upload New PDF</h4>
+        <form method="POST" action="{{ url_for('upload') }}" enctype="multipart/form-data">
+            <input type="file" class="form-control mb-2" name="doc" accept=".pdf,.doc,.docx" multiple required>
+            <button class="btn btn-primary">Upload</button>
+        </form>
+    </div>
+
+    <!-- Certifier Module -->
+    <div id="certifierModule" class="hidden">
+        <h4>📥 Documents Pending Your Approval</h4>
+        <div class="certifier-grid-container">
+            {% for d in documents if d.status == 'Pending' %}
+                <div class="certifier-doc-card pending" id="doc-{{ d.id }}" data-section="certifier">
+                    <strong>{{ d.original_filename }}</strong><br>
+                    <small>Uploaded by: {{ d.uploaded_by }}</small><br>
+                    <small>{{ d.timestamp_uploaded[:19].replace("T", " ") }}</small>
+                    <button class="btn btn-secondary btn-sm mt-2"
+                        onclick="openDocModal('{{ url_for('uploaded_file', filename=d.signed_filename or d.filename) }}', '{{ d.id }}', 'Pending', 'certifier')">
+                        📄 View & Approve/Reject
+                    </button>
+                </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Search Bar -->
+    <div class="form-group mb-3">
+        <input type="text" id="searchInputManager" class="form-control" placeholder="🔍 Search documents..." onkeyup="liveSearch('managerSection', 'searchInputManager')">
+    </div>
+
+    <h4 class="mt-5">📚 Actioned Files History</h4>
+    <div class="label-grid">
+        {% for d in documents if d.status in ['Approved', 'Pending'] %}
+            <div class="label-card {{ 'label-approved' if d.status=='Approved' else 'label-rejected' if d.status=='Rejected' else 'label-pending' }}" id="doc-{{ d.id }}" data-section="history">
+                <strong>{{ d.original_filename }}</strong>
+                <span class="badge">{{ d.status }}</span>
+                <div class="meta"><blockquote>
+                    <small>By: {{ d.uploaded_by }}</small>-
+                    <small>{{ d.timestamp_uploaded[:19].replace("T", " ") }}</small></blockquote>
+                    <span class="badge">Actioned: {{ d.timestamp_actioned[:19].replace("T", " ") if d.timestamp_actioned else 'N/A' }}</span>
+                </div><br>
+                <button class="btn btn-sm btn-outline-light mt-1"
+                    onclick="openDocModal('{{ url_for('uploaded_file', filename=d.signed_filename or d.filename) }}', '{{ d.id }}', '{{ d.status }}', 'history')">👁 View</button>
+            </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Modal -->
+<div id="docModal" class="pdf-popup hidden" data-draggable="true">
+    <div class="popup-header">
+        <span>📄 PDF Preview</span>
+        <div class="nav-container">
+            <button id="prevBtn" class="btn btn-sm btn-secondary hidden" onclick="prevDocument()">⬅Previous </button>
+            <button id="nextBtn" class="btn btn-sm btn-secondary hidden" onclick="nextDocument()">Next ➡</button>
+        </div>
+        <div>
+            <button class="btn btn-sm btn-secondary" onclick="toggleFullscreen()">🗖</button>
+            <button class="btn btn-sm btn-danger" onclick="closeDocModal()">❌</button>
+        </div>
+    </div>
+    <iframe id="docViewer" frameborder="0"></iframe>
+    <div id="actionFormContainer" class="p-2 bg-light border-top justify-content center">
+        <form id="preparedForm" class="hidden">
+            <input type="hidden" name="role_context" value="Prepared">
+            <input type="hidden" id="preparedDocId" name="id">
+            <div class="d-flex gap-2">
+                <button type="button" id="verifyButton" class="btn btn-success w-50 hidden" onclick="verifyDocument()">✅ Verify</button>
+                <button type="button" id="sendButton" class="btn btn-primary w-50 hidden" onclick="sendDocument()">📤 Send</button>
+            </div>
+        </form>
+        <form id="certifierForm" class="hidden">
+            <input type="hidden" name="role_context" value="Certifier">
+            <input type="hidden" id="certifierDocId" name="id">
+            <input name="remarks" class="form-control mb-2" placeholder="Remarks" required>
+            <div class="d-flex">
+                <button type="button" class="btn btn-success w-50" onclick="submitAction('Approved')">✅ Approve</button>
+                <button type="button" class="btn btn-danger w-50" onclick="submitAction('Rejected')">❌ Reject</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Notification div -->
+<div id="actionMessage" class="alert hidden"></div>
+
+<script>
+let currentDocId = null;
+let currentSection = null;
+let currentDocIndex = -1;
+let docList = [];
+
+// Drag state
+let isDragging = false;
+let currentX;
+let currentY;
+let initialX;
+let initialY;
+
+function switchModule(mode) {
+    document.getElementById("preparedModule").classList.toggle("hidden", mode !== "prepared");
+    document.getElementById("certifierModule").classList.toggle("hidden", mode !== "certifier");
+}
+
+function openDocModal(url, id, status, section) {
+    const container = document.getElementById("docModal");
+    const viewer = document.getElementById("docViewer");
+    const actions = document.getElementById("actionFormContainer");
+    const verifyBtn = document.getElementById("verifyButton");
+    const sendBtn = document.getElementById("sendButton");
+    const preparedForm = document.getElementById("preparedForm");
+    const certifierForm = document.getElementById("certifierForm");
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+
+    viewer.src = url;
+    currentDocId = id;
+    currentSection = section;
+
+    // Hide both forms by default
+    preparedForm.classList.add("hidden");
+    certifierForm.classList.add("hidden");
+    verifyBtn.classList.add("hidden");
+    sendBtn.classList.add("hidden");
+
+    if (id && status) {
+        if (status === "Uploaded") {
+            preparedForm.classList.remove("hidden");
+            verifyBtn.classList.remove("hidden");
+            sendBtn.classList.remove("hidden");
+            document.getElementById("preparedDocId").value = id;
+        } else if (status === "Verified") {
+            preparedForm.classList.remove("hidden");
+            verifyBtn.classList.add("hidden");
+            sendBtn.classList.remove("hidden");
+            document.getElementById("preparedDocId").value = id;
+        } else if (status === "Pending") {
+            certifierForm.classList.remove("hidden");
+            document.getElementById("certifierDocId").value = id;
+        }
+    }
+
+    // Update document list for the current section, excluding hidden cards (e.g., filtered by search)
+    docList = Array.from(document.querySelectorAll(`[data-section="${section}"]:not([style*="display: none"])`));
+    currentDocIndex = docList.findIndex(card => card.id === `doc-${id}`);
+
+    // Update navigation buttons visibility
+    prevBtn.classList.toggle("hidden", currentDocIndex <= 0 || docList.length <= 1);
+    nextBtn.classList.toggle("hidden", currentDocIndex >= docList.length - 1 || docList.length <= 1);
+
+    container.classList.remove("hidden", "minimized");
+    document.getElementById("actionMessage").classList.add("hidden");
+
+    // Reset modal position and drag state
+    if (!container.classList.contains("fullscreen")) {
+        container.style.left = "";
+        container.style.top = "";
+        container.style.bottom = "30px";
+        container.style.right = "30px";
+        currentX = window.innerWidth - container.offsetWidth - 30;
+        currentY = window.innerHeight - container.offsetHeight - 30;
+    }
+}
+
+function prevDocument() {
+    if (currentDocIndex > 0) {
+        currentDocIndex--;
+        const card = docList[currentDocIndex];
+        const id = card.id.replace("doc-", "");
+        const url = card.querySelector("button[onclick*='openDocModal']").getAttribute("onclick").match(/'([^']+)'/)[1];
+        const status = card.querySelector(".badge") ? card.querySelector(".badge").textContent : "Pending";
+        openDocModal(url, id, status, currentSection);
+    }
+}
+
+function nextDocument() {
+    if (currentDocIndex < docList.length - 1) {
+        currentDocIndex++;
+        const card = docList[currentDocIndex];
+        const id = card.id.replace("doc-", "");
+        const url = card.querySelector("button[onclick*='openDocModal']").getAttribute("onclick").match(/'([^']+)'/)[1];
+        const status = card.querySelector(".badge") ? card.querySelector(".badge").textContent : "Pending";
+        openDocModal(url, id, status, currentSection);
+    }
+}
+
+function closeDocModal() {
+    document.getElementById("docViewer").src = '';
+    document.getElementById("docModal").classList.add("hidden");
+    currentDocId = null;
+    currentSection = null;
+    currentDocIndex = -1;
+    docList = [];
+    // Reset drag state
+    isDragging = false;
+}
+
+function toggleFullscreen() {
+    const modal = document.getElementById("docModal");
+    modal.classList.toggle("fullscreen");
+    modal.classList.remove("minimized");
+    // Reset position in fullscreen to fit entire screen
+    if (modal.classList.contains("fullscreen")) {
+        modal.style.left = "0";
+        modal.style.top = "0";
+        modal.style.bottom = "0";
+        modal.style.right = "0";
+    } else {
+        // Restore default position when exiting fullscreen
+        modal.style.left = "";
+        modal.style.top = "";
+        modal.style.bottom = "30px";
+        modal.style.right = "30px";
+        currentX = window.innerWidth - modal.offsetWidth - 30;
+        currentY = window.innerHeight - modal.offsetHeight - 30;
+    }
+    // Update navigation buttons
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    prevBtn.classList.toggle("hidden", currentDocIndex <= 0 || docList.length <= 1);
+    nextBtn.classList.toggle("hidden", currentDocIndex >= docList.length - 1 || docList.length <= 1);
+}
+
+function toggleMinimize() {
+    const modal = document.getElementById("docModal");
+    modal.classList.toggle("minimized");
+    modal.classList.remove("fullscreen");
+    // Restore default position when exiting minimized mode
+    if (!modal.classList.contains("minimized")) {
+        modal.style.left = "";
+        modal.style.top = "";
+        modal.style.bottom = "30px";
+        modal.style.right = "30px";
+        currentX = window.innerWidth - modal.offsetWidth - 30;
+        currentY = window.innerHeight - modal.offsetHeight - 30;
+    }
+    // Update navigation buttons
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    prevBtn.classList.toggle("hidden", currentDocIndex <= 0 || docList.length <= 1);
+    nextBtn.classList.toggle("hidden", currentDocIndex >= docList.length - 1 || docList.length <= 1);
+}
+
+function submitAction(decision) {
+    const fd = new FormData(document.getElementById("certifierForm"));
+    const docId = document.getElementById("certifierDocId").value;
+    fetch(`/action/${docId}/${decision}`, {
+        method: "POST",
+        body: fd
+    }).then(res => {
+        if (res.ok) {
+            const msg = document.getElementById("actionMessage");
+            msg.innerText = `${decision} successful`;
+            msg.className = "alert alert-success";
+            msg.classList.remove("hidden");
+            setTimeout(() => {
+                closeDocModal();
+                location.reload();
+            }, 1200);
+        } else {
+            return res.json().then(err => { throw new Error(err.error || "Action failed"); });
+        }
+    }).catch(e => {
+        const msg = document.getElementById("actionMessage");
+        msg.innerText = e.message;
+        msg.className = "alert alert-danger";
+        msg.classList.remove("hidden");
+        setTimeout(() => msg.classList.add("hidden"), 3000);
+    });
+}
+
+function deleteDocument(docId) {
+    const cards = document.querySelectorAll(`#doc-${docId}`);
+    const msg = document.getElementById("actionMessage");
+    
+    cards.forEach(card => {
+        card.style.opacity = '0.5';
+        card.querySelectorAll('.delete-btn').forEach(btn => btn.disabled = true);
+    });
+    
+    fetch(`/delete/${docId}`, {
+        method: "DELETE"
+    }).then(res => {
+        if (res.ok) {
+            cards.forEach(card => card.remove());
+            msg.innerText = 'Document deleted successfully';
+            msg.className = "alert alert-success";
+            msg.classList.remove("hidden");
+            setTimeout(() => {
+                msg.classList.add("hidden");
+                location.reload();
+            }, 2000);
+        } else {
+            return res.json().then(err => { throw new Error(err.error || 'Deletion failed'); });
+        }
+    }).catch(e => {
+        cards.forEach(card => {
+            card.style.opacity = '1';
+            card.querySelectorAll('.delete-btn').forEach(btn => btn.disabled = false);
+        });
+        msg.innerText = e.message;
+        msg.className = "alert alert-danger";
+        msg.classList.remove("hidden");
+        setTimeout(() => msg.classList.add("hidden"), 2000);
+    });
+}
+
+function liveSearch(containerId, inputId) {
+    const input = document.getElementById(inputId).value.toLowerCase();
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const cards = container.querySelectorAll('.doc-card, .prepared-doc-card, .certifier-doc-card, .label-card');
+    cards.forEach(card => {
+        const text = card.innerText.toLowerCase();
+        card.style.display = text.includes(input) ? '' : 'none';
+        const tooltip = card.querySelector(".remarks-tooltip");
+        if (tooltip) {
+            tooltip.classList.add("hidden");
+        }
+    });
+}
+
+function verifyDocument() {
+    const docId = currentDocId;
+    const card = document.getElementById(`doc-${docId}`);
+    const msg = document.getElementById("actionMessage");
+    const verifyBtn = document.getElementById("verifyButton");
+    const sendBtn = document.getElementById("sendButton");
+    
+    msg.classList.remove("hidden", "alert-success", "alert-danger");
+    msg.innerText = "";
+    
+    if (card) {
+        card.style.opacity = '0.5';
+        card.querySelectorAll('button').forEach(btn => btn.disabled = true);
+    }
+    
+    fetch(`/verify/${docId}`, {
+        method: "GET",
+        headers: {
+            'Content-Type': 'application/json'
+        }
+    }).then(res => {
+        return res.json().then(data => ({ status: res.status, data }));
+    }).then(({ status, data }) => {
+        if (status === 200) {
+            msg.innerText = data.message;
+            msg.className = "alert alert-success";
+            msg.classList.remove("hidden");
+            if (card) {
+                card.classList.remove("uploaded");
+                card.classList.add("verified");
+                const badge = card.querySelector(".badge");
+                if (badge) {
+                    badge.classList.remove("status-uploaded");
+                    badge.classList.add("status-verified");
+                    badge.innerText = "Verified";
+                }
+                card.style.opacity = '1';
+                card.querySelectorAll('button').forEach(btn => btn.disabled = false);
+            }
+            if (verifyBtn) {
+                verifyBtn.classList.add("hidden");
+            }
+            if (sendBtn) {
+                sendBtn.classList.remove("hidden");
+            }
+            setTimeout(() => {
+                msg.classList.add("hidden");
+            }, 2000);
+        } else {
+            if (card) {
+                card.style.opacity = '1';
+                card.querySelectorAll('button').forEach(btn => btn.disabled = false);
+            }
+            msg.innerText = data.error || "Verification failed: Unknown error";
+            msg.className = "alert alert-danger";
+            msg.classList.remove("hidden");
+            setTimeout(() => msg.classList.add("hidden"), 3000);
+        }
+    }).catch(e => {
+        if (card) {
+            card.style.opacity = '1';
+            card.querySelectorAll('button').forEach(btn => btn.disabled = false);
+        }
+        msg.innerText = "Verification failed: Network error";
+        msg.className = "alert alert-danger";
+        msg.classList.remove("hidden");
+        setTimeout(() => msg.classList.add("hidden"), 3000);
+    });
+}
+
+function sendDocument() {
+    const docId = currentDocId;
+    const card = document.getElementById(`doc-${docId}`);
+    const msg = document.getElementById("actionMessage");
+    
+    msg.classList.remove("hidden", "alert-success", "alert-danger");
+    msg.innerText = "";
+    
+    if (card) {
+        card.style.opacity = '0.5';
+        card.querySelectorAll('button').forEach(btn => btn.disabled = true);
+    }
+    
+    fetch(`/send/${docId}?ajax=true&role_context=Prepared`, {
+        method: "GET",
+        headers: {
+            'Content-Type': 'application/json'
+        }
+    }).then(res => {
+        return res.json().then(data => ({ status: res.status, data }));
+    }).then(({ status, data }) => {
+        if (status === 200) {
+            msg.innerText = data.message || "Document sent successfully";
+            msg.className = "alert alert-success";
+            msg.classList.remove("hidden");
+            setTimeout(() => {
+                closeDocModal();
+                location.reload();
+            }, 2000);
+        } else {
+            if (card) {
+                card.style.opacity = '1';
+                card.querySelectorAll('button').forEach(btn => btn.disabled = false);
+            }
+            msg.innerText = data.error || "Sending failed";
+            msg.className = "alert alert-danger";
+            msg.classList.remove("hidden");
+            setTimeout(() => msg.classList.add("hidden"), 3000);
+        }
+    }).catch(e => {
+        if (card) {
+            card.style.opacity = '1';
+            card.querySelectorAll('button').forEach(btn => btn.disabled = false);
+        }
+        msg.innerText = "Sending failed: Network error";
+        msg.className = "alert alert-danger";
+        msg.classList.remove("hidden");
+        setTimeout(() => msg.classList.add("hidden"), 3000);
+    });
+}
+
+// Add hover event listeners for tooltips and drag event listeners for modal
+document.addEventListener("DOMContentLoaded", () => {
+    const preparedCards = document.querySelectorAll("#preparedModule .prepared-doc-card");
+    preparedCards.forEach(card => {
+        const tooltip = card.querySelector(".remarks-tooltip");
+        if (tooltip) {
+            card.addEventListener("mouseenter", () => {
+                if (card.style.display !== "none") {
+                    tooltip.classList.remove("hidden");
+                }
+            });
+            card.addEventListener("mouseleave", () => {
+                tooltip.classList.add("hidden");
+            });
+        }
+    });
+
+    // Drag event listeners for modal
+    const modal = document.getElementById("docModal");
+    const header = modal.querySelector(".popup-header");
+
+    // Initialize drag position based on bottom: 30px, right: 30px
+    currentX = window.innerWidth - modal.offsetWidth - 30;
+    currentY = window.innerHeight - modal.offsetHeight - 30;
+
+    header.addEventListener("mousedown", (e) => {
+        if (modal.classList.contains("fullscreen") || modal.classList.contains("minimized")) return;
+        isDragging = true;
+        initialX = e.clientX - currentX;
+        initialY = e.clientY - currentY;
+        header.style.cursor = "grabbing";
+    });
+
+    document.addEventListener("mousemove", (e) => {
+        if (!isDragging) return;
+        e.preventDefault();
+        currentX = e.clientX - initialX;
+        currentY = e.clientY - initialY;
+
+        // Constrain modal within viewport
+        const rect = modal.getBoundingClientRect();
+        const maxX = window.innerWidth - rect.width;
+        const maxY = window.innerHeight - rect.height;
+        currentX = Math.max(0, Math.min(currentX, maxX));
+        currentY = Math.max(0, Math.min(currentY, maxY));
+
+        modal.style.left = currentX + "px";
+        modal.style.top = currentY + "px";
+        modal.style.bottom = "auto";
+        modal.style.right = "auto";
+    });
+
+    document.addEventListener("mouseup", () => {
+        if (isDragging) {
+            isDragging = false;
+            header.style.cursor = "move";
+        }
+    });
+});
+</script>
+
+<style>
+    .hidden { display: none; }
+    .logout-container {
+        position: fixed;
+        top: 10px;
+        left: 20px;
+    }
+    .prepared-grid-container,
+    .certifier-grid-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 3rem;
+        margin-top: 1rem;
+    }
+    .prepared-doc-card,
+    .certifier-doc-card {
+        width: 260px;
+        background: #ffffff0c;
+        padding: 1rem;
+        border-radius: 25px;
+        border-left: 5px solid #ffc107;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+        position: relative;
+        overflow: visible;
+    }
+    .prepared-doc-card.uploaded { border-left-color: #ffc107; }
+    .prepared-doc-card.verified { border-left-color: #28a745; backdrop-filter: blur(5px); }
+    .prepared-doc-card.rejected { border-left-color: #dc3545; backdrop-filter: blur(5px); }
+    .certifier-doc-card.approved {
+        border-left-color: #28a745;
+        background-color: #e8f6ec1c; backdrop-filter: blur(5px);
+    }
+    .certifier-doc-card.rejected {
+        border-left-color: #dc3545;
+        background-color: #e8f6ec1c; backdrop-filter: blur(5px);
+    }
+    .certifier-doc-card.pending {
+        border-left-color: #ffc107;
+        background-color: #ffffff27;
+    }
+    .prepared-doc-card .delete-btn {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        padding: 2px 8px;
+        font-size: 0.8rem;
+    }
+    .prepared-doc-card .doc-content {
+        margin-top: 10px;
+    }
+    .label-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 1rem;
+        margin-top: 1rem;
+    }
+    .label-card {
+        padding: 0.2rem;
+        border-left: 5px solid #f7f5f5;
+        border-radius: 25px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.7);
+    }
+    .label-card:hover {
+        transform: scale(1.03);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+    .label-approved {
+        border-left-color: #28a745;
+        background-color: #e8f6ec00; backdrop-filter: blur(5px);
+    }
+    .label-rejected {
+        border-left-color: #dc3545;
+        background-color: #918f8f5b; backdrop-filter: blur(5px);
+    }
+    .label-pending {
+        border-left-color: #ffc107;
+        background-color: #ffffff27;
+        backdrop-filter: blur(5px);
+    }
+    .label-card .badge {
+        display: inline-block;
+        background: #888;
+        color: #fff;
+        padding: 0px 7px;
+        border-radius: 25px;
+        font-size: 0.75rem;
+    }
+    .label-approved .badge { background: #28a746ce; align-items: center; }
+    .label-rejected .badge { background: #dc3546c0; align-items: center; }
+    .label-pending .badge { background: #14c1d8; align-items: center; }
+    .badge.status-uploaded {
+        background-color: #ffc107;
+        color: #212529;
+        border-radius: 25px;
+        padding: 0px 7px;
+    }
+    .badge.status-verified {
+        background-color: #28a745;
+        color: #fff;
+    }
+    .badge.status-rejected {
+        background-color: #dc3545;
+        color: #fff;
+        padding: 3px;
+        border-radius: 10px;
+    }
+    .meta { font-size: 0.8rem; color: #eeeaea; text-align: center; }
+    .pdf-popup {
+        position: fixed;
+        bottom: 30px;
+        right: 30px;
+        width: 700px;
+        height: 500px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(10px);
+        box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        display: flex;
+        flex-direction: column;
+        z-index: 1050;
+        overflow: hidden;
+        transition: all 0.01s ease;
+    }
+    .pdf-popup.hidden { 
+        display: none;
+    }
+    .pdf-popup.fullscreen {
+        width: 100vw !important;
+        height: 100vh !important;
+        bottom: 0 !important;
+        right: 0 !important;
+        left: 0 !important;
+        margin: 0 !important;
+        
+    }
+    .pdf-popup.fullscreen .popup-header {
+        padding: 15px;
+        background: rgba(0, 0, 0, 0.5);
+    }
+    .pdf-popup.fullscreen .nav-container button {
+        font-size: 1rem;
+        padding: 8px 16px;
+    }
+    .pdf-popup.minimized {
+        width: 300px !important;
+        height: 50px !important;
+        bottom: 30px;
+        right: 30px;
+    }
+    .pdf-popup.minimized iframe,
+    .pdf-popup.minimized .actionFormContainer {
+        display: none;
+    }
+    .pdf-popup iframe {
+        flex: 1;
+        width: 100%;
+        height: 100%;
+        border: none;
+    }
+    .popup-header {
+        background: rgba(0, 0, 0, 0.3);
+        padding: 10px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        z-index: 1100;
+        cursor: move;
+    }
+    .remarks {
+    font-size: 0.9rem;
+    color: #fff;
+    font-style: italic;
+    margin-top: 5px;
+    word-wrap: break-word;
+    padding: 5px;
+    }
+
+    .remarks.hidden {
+    display: none;
+    }
+
+    .remarks-tooltip {
+    position: absolute;
+    top: -90px;
+    left: -30px;
+    right: 60px;
+    max-width: 500px;
+    max-height: 100px;
+    padding: 8px 12px;
+    background: #ffffffda;
+    color: #050505;
+    border-radius: 30px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    z-index: 10000;
+    font-size: 1.0rem;
+    word-wrap: break-word;
+    text-align: center;
+    overflow: auto;
+    scrollbar-width: none;
+    -ms-overflow-style:none;
+    }
+    .remarks-tooltip::-webkit-scrollbar{
+    display: none;
+    }
+
+    .remarks-tooltip.hidden {
+    display: none;
+    }
+    .alert.hidden { display: none; }
+    #searchInputManager {
+        width: 400px;
+        padding: 15px 15px;
+        font-size: 1rem;
+        border-radius: 25px;
+        background: rgba(255, 255, 255, 0.575);
+        border: 3px solid rgba(0, 0, 0, 0.3);
+        color: #ffffff;
+        text-align: center;
+        backdrop-filter: blur(5px);
+    }
+    .alert {
+        position: fixed;
+        top: 100px;
+        right: auto;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 2000;
+        padding: 10px 20px;
+        border-radius: 20px;
+        max-width: 400px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+        backdrop-filter: blur(5px);
+        font-size: 1rem;
+        text-align: center;
+        align-content: center;
+    }
+    .alert-success {
+        background-color: #49dd6bbb;
+        color: white;
+    }
+    .alert-danger {
+        background-color: #e9828c6b;
+        color: white;
+    }
+</style>
+{% endblock %}
