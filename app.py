@@ -13,20 +13,24 @@ import os
 import json
 import logging
 import uuid
+from werkzeug.security import generate_password_hash, check_password_hash
 import fitz
 import pythoncom
 import win32com.client
 
 app = Flask(__name__)
-app.secret_key = 'your_secret_key'
+app.secret_key = os.environ.get("DIGITAL_SIGNATURE_SECRET") or os.urandom(32)
 
-UPLOAD_FOLDER = os.path.join(os.getcwd(), 'upload')
-DOCS_FILE = 'documents.json'
-HISTORY_FILE = 'history.json'
-USERS_FILE = 'users.json'
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+# Keep runtime JSON files beside app.py for compatibility with existing local data.
+UPLOAD_FOLDER = os.path.join(APP_DIR, "upload")
+DOCS_FILE = os.path.join(APP_DIR, "documents.json")
+HISTORY_FILE = os.path.join(APP_DIR, "history.json")
+USERS_FILE = os.path.join(APP_DIR, "users.json")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 ALLOWED_EXTENSIONS = {'.pdf', '.doc', '.docx'}
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
 for path in [DOCS_FILE, HISTORY_FILE, USERS_FILE]:
     if not os.path.exists(path):
@@ -190,8 +194,23 @@ def login():
     pbno = request.form['pbno']
     password = request.form['password']
     users = load_json(USERS_FILE)
-    user = next((u for u in users if u['pbno'] == pbno and u['password'] == password), None)
+    user = next((u for u in users if u.get('pbno') == pbno), None)
     if user:
+        stored_password = user.get("password", "")
+        valid_password = False
+        try:
+            valid_password = check_password_hash(stored_password, password)
+        except (ValueError, TypeError):
+            valid_password = False
+        # Upgrade legacy plaintext passwords on successful login.
+        if not valid_password and stored_password and stored_password == password:
+            valid_password = True
+            user["password"] = generate_password_hash(password)
+            save_json(USERS_FILE, users)
+    else:
+        valid_password = False
+    if user and valid_password:
+        session.clear()
         session['username'] = user['username']
         session['pbno'] = user['pbno']
         session['role'] = user['role']
@@ -207,6 +226,9 @@ def register():
     password = request.form['password']
     role = request.form['role']
     stamp = request.form.get('stamp', '')
+    if role not in {"Prepared", "Manager"}:
+        flash("Invalid role selected.", "register:danger")
+        return redirect(url_for('home', tab='register'))
     users = load_json(USERS_FILE)
     if not all([username, pbno, password, role]):
         flash("All fields except stamp are required.", "register:danger")
@@ -217,7 +239,7 @@ def register():
     users.append({
         "username": username,
         "pbno": pbno,
-        "password": password,
+        "password": generate_password_hash(password),
         "role": role,
         "stamp": stamp
     })
@@ -318,9 +340,11 @@ def upload():
 def verify(id):
     if 'username' not in session:
         return jsonify({'error': 'Unauthorized, please log in'}), 401
+    if session.get('role', '').lower() != 'prepared':
+        return jsonify({'error': 'Only Prepared users can verify their own uploaded documents'}), 403
     documents = load_json(DOCS_FILE)
     doc = next((d for d in documents if str(d['id']) == id), None)
-    if not doc or doc['status'] != 'Uploaded':
+    if not doc or doc['status'] != 'Uploaded' or doc.get('uploaded_by') != session.get('username'):
         return jsonify({'error': 'Document not found or not in uploadable state'}), 404
     input_path = os.path.join(UPLOAD_FOLDER, doc['filename'])
     signed_name = f"signed_{doc['filename']}"
@@ -349,10 +373,14 @@ def verify(id):
 def send(id):
     if 'username' not in session:
         return jsonify({'error': 'Unauthorized, please log in'}), 401
+    if session.get('role', '').lower() != 'prepared':
+        return jsonify({'error': 'Only Prepared users can submit documents'}), 403
     documents = load_json(DOCS_FILE)
     doc = next((d for d in documents if str(d['id']) == id), None)
     if not doc:
         return jsonify({'error': 'Document not found'}), 404
+    if doc.get('uploaded_by') != session.get('username'):
+        return jsonify({'error': 'Unauthorized to send this document'}), 403
     if doc['status'] != 'Verified':
         return jsonify({'error': 'Document not in verifiable state'}), 400
     if doc['uploaded_by'] != session['username']:
@@ -366,6 +394,11 @@ def send(id):
 def action(id, decision):
     if 'username' not in session:
         return jsonify({'error': 'Unauthorized, please log in'}), 401
+    if session.get('role', '').lower() != 'certifier':
+        return jsonify({'error': 'Only Certifier users can approve or reject documents'}), 403
+    if decision.lower() not in {"approved", "rejected"}:
+        return jsonify({'error': 'Decision must be Approved or Rejected'}), 400
+    decision = decision.capitalize()
     remarks = request.form.get('remarks', '')
     documents = load_json(DOCS_FILE)
     for doc in documents:
@@ -430,6 +463,15 @@ def delete_document(id):
 
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
+    if 'username' not in session:
+        return jsonify({'error': 'Unauthorized, please log in'}), 401
+    documents = load_json(DOCS_FILE)
+    doc = next((d for d in documents if filename in {d.get('filename'), d.get('signed_filename')}), None)
+    if not doc:
+        return jsonify({'error': 'Document not found'}), 404
+    role = session.get('role', '').lower()
+    if doc.get('uploaded_by') != session.get('username') and role not in {'certifier', 'manager'}:
+        return jsonify({'error': 'You are not allowed to access this document'}), 403
     return send_from_directory(UPLOAD_FOLDER, filename)
 
 @app.route('/logout')
@@ -438,4 +480,4 @@ def logout():
     return redirect(url_for('home'))
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5057)
+    app.run(debug=False, host='127.0.0.1', port=5057)
