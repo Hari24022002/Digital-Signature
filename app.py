@@ -22,11 +22,11 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("DIGITAL_SIGNATURE_SECRET") or os.urandom(32)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(APP_DIR, "data")
-UPLOAD_FOLDER = os.path.join(DATA_DIR, "upload")
-DOCS_FILE = os.path.join(DATA_DIR, "documents.json")
-HISTORY_FILE = os.path.join(DATA_DIR, "history.json")
-USERS_FILE = os.path.join(DATA_DIR, "users.json")
+# Keep runtime JSON files beside app.py for compatibility with existing local data.
+UPLOAD_FOLDER = os.path.join(APP_DIR, "upload")
+DOCS_FILE = os.path.join(APP_DIR, "documents.json")
+HISTORY_FILE = os.path.join(APP_DIR, "history.json")
+USERS_FILE = os.path.join(APP_DIR, "users.json")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 ALLOWED_EXTENSIONS = {'.pdf', '.doc', '.docx'}
@@ -373,10 +373,14 @@ def verify(id):
 def send(id):
     if 'username' not in session:
         return jsonify({'error': 'Unauthorized, please log in'}), 401
+    if session.get('role', '').lower() != 'prepared':
+        return jsonify({'error': 'Only Prepared users can submit documents'}), 403
     documents = load_json(DOCS_FILE)
     doc = next((d for d in documents if str(d['id']) == id), None)
     if not doc:
         return jsonify({'error': 'Document not found'}), 404
+    if doc.get('uploaded_by') != session.get('username'):
+        return jsonify({'error': 'Unauthorized to send this document'}), 403
     if doc['status'] != 'Verified':
         return jsonify({'error': 'Document not in verifiable state'}), 400
     if doc['uploaded_by'] != session['username']:
